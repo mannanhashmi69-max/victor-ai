@@ -1,58 +1,100 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 
-// ====== VICTOR AI FRONTEND ======
-// Production-ready multi-agent system UI
-
 const VictorAI = () => {
   const [tasks, setTasks] = useState([]);
   const [currentTask, setCurrentTask] = useState('');
   const [loading, setLoading] = useState(false);
-  const [userDashboard, setUserDashboard] = useState(null);
   const [activeTab, setActiveTab] = useState('submit');
   const [deliveryFormat, setDeliveryFormat] = useState('text');
-  const [userId] = useState(`user-${Date.now()}`);
+  
+  // State for Auth and Project IDs required by the backend
+  const [token, setToken] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [credits, setCredits] = useState(0);
 
   const API_URL = 'http://localhost:8000/api';
 
   useEffect(() => {
-    checkHealth();
+    setupSession();
   }, []);
 
-  const checkHealth = async () => {
+  // Backend requires full JWT Authentication and a valid Project
+  const setupSession = async () => {
     try {
-      const res = await fetch(`${API_URL}/health`);
-      const data = await res.json();
-      console.log('✅ Backend healthy:', data);
+      // 1. Register/Login a temporary user to get a valid JWT
+      const authRes = await fetch(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: `user-${Date.now()}@victor.ai`,
+          password: 'securepassword123',
+          username: 'Developer'
+        })
+      });
+      const authData = await authRes.json();
+      
+      if (authData.token) {
+        setToken(authData.token);
+        setCredits(authData.credits);
+
+        // 2. Create a default project for this authenticated session
+        const projectRes = await fetch(`${API_URL}/projects`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authData.token}`
+          },
+          body: JSON.stringify({
+            name: 'Default Project',
+            description: 'Automated workspace for UI submissions'
+          })
+        });
+        const projectData = await projectRes.json();
+        if (projectData.success) {
+          setProjectId(projectData.project.id);
+          console.log('✅ Auth and Project initialized successfully!');
+        }
+      }
     } catch (error) {
-      console.log('❌ Backend offline');
+      console.error('❌ Failed to initialize authenticated session:', error);
     }
   };
 
   const submitTask = async (e) => {
     e.preventDefault();
-    if (!currentTask.trim()) return;
+    if (!currentTask.trim() || !token || !projectId) {
+      alert('Please wait until the session is fully initialized.');
+      return;
+    }
 
     setLoading(true);
     try {
-      const res = await fetch(`${API_URL}/task/submit`, {
+      // Corrected API endpoint: /api/tasks
+      const res = await fetch(`${API_URL}/tasks`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-ID': userId
+          'Authorization': `Bearer ${token}` // Passing the required JWT
         },
+        // Match payload properties to backend expectations
         body: JSON.stringify({
-          description: currentTask,
-          delivery_format: deliveryFormat
+          projectId: projectId,
+          prompt: currentTask,
+          format: deliveryFormat
         })
       });
 
       const data = await res.json();
       
       if (data.success) {
+        // The backend processes asynchronously and returns a 'processing' status
         setTasks([data, ...tasks]);
         setCurrentTask('');
-        alert('✅ Task submitted successfully!');
+        alert('🚀 Task submitted and processing in background!');
+        
+        // Refresh usage details to update credits display
+        fetchUsage();
       } else {
         alert(`❌ Error: ${data.error}`);
       }
@@ -60,6 +102,19 @@ const VictorAI = () => {
       alert(`❌ Failed: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchUsage = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_URL}/user/usage`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      setCredits(data.creditsAvailable);
+    } catch (err) {
+      console.error('Could not fetch updated credits', err);
     }
   };
 
@@ -79,7 +134,10 @@ const VictorAI = () => {
         </button>
         <button 
           className={`nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
-          onClick={() => setActiveTab('dashboard')}
+          onClick={() => {
+            setActiveTab('dashboard');
+            fetchUsage();
+          }}
         >
           📊 Dashboard
         </button>
@@ -93,9 +151,9 @@ const VictorAI = () => {
               <textarea
                 value={currentTask}
                 onChange={(e) => setCurrentTask(e.target.value)}
-                placeholder="Describe your task..."
+                placeholder="Describe your task (e.g., 'generate a summary of web3 trends')..."
                 rows={6}
-                disabled={loading}
+                disabled={loading || !projectId}
               />
               
               <div className="format-selector">
@@ -110,23 +168,23 @@ const VictorAI = () => {
 
               <button 
                 type="submit" 
-                disabled={loading || !currentTask.trim()}
+                disabled={loading || !currentTask.trim() || !projectId}
                 className="submit-btn"
               >
-                {loading ? '⏳ Processing...' : '🚀 Submit Task'}
+                {!projectId ? '⏳ Initializing Session...' : loading ? '⏳ Processing...' : '🚀 Submit Task'}
               </button>
             </form>
 
             {tasks.length > 0 && (
               <div className="recent-results">
-                <h3>📊 Recent Results</h3>
+                <h3>📊 Recent Submissions</h3>
                 {tasks.slice(0, 3).map((task, idx) => (
                   <div key={idx} className="result-card">
-                    <div className="result-status">
-                      ✅ Completed
+                    <div className="result-status" style={{ color: '#00d084' }}>
+                      Status: {task.status.toUpperCase()}
                     </div>
                     <div className="result-preview">
-                      Task {idx + 1}
+                      ID: {task.taskId}
                     </div>
                   </div>
                 ))}
@@ -141,10 +199,10 @@ const VictorAI = () => {
             <div className="dashboard-grid">
               <div className="stat-card">
                 <div className="stat-label">💵 Credits Available</div>
-                <div className="stat-value">100</div>
+                <div className="stat-value">{credits}</div>
               </div>
               <div className="stat-card">
-                <div className="stat-label">✅ Tasks Completed</div>
+                <div className="stat-label">✅ Tasks Processed</div>
                 <div className="stat-value">{tasks.length}</div>
               </div>
             </div>
@@ -153,7 +211,7 @@ const VictorAI = () => {
       </main>
 
       <footer className="victor-footer">
-        <p>Victor AI v1.0 © 2024 - Enterprise Multi-Agent Platform</p>
+        <p>Victor AI v1.0 © 2026 - Enterprise Multi-Agent Platform</p>
       </footer>
     </div>
   );
